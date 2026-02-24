@@ -7,6 +7,7 @@ Project: Classroom Utilization → Clean Excel Transformation Tool
 Purpose: Automatically convert raw classroom utilization CSV exports into a clean, standardized, analytics‑ready Excel workbook.
 
 AI Acknowledgement: This project was conducted with the assistance of Copilot.
+
 ---
 
 ## 1. System Overview
