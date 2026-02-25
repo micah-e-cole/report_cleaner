@@ -6,16 +6,18 @@
 # Date: 02/24/2026
 
 # ---------------- LIBRARIES ----------------
+import os
 import pandas as pd
+import xlrd
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font
 
 # ---------------- FUNCTIONS ----------------
-def transform_classroom_utilization(csv_path: str) -> pd.DataFrame:
+def transform_classroom_utilization(input_path: str) -> pd.DataFrame:
     '''
-    Transform an EMS classroom utilization CSV export into a normalized DataFrame.
+    Transform an EMS classroom utilization .XLSX export into a normalized DataFrame.
 
     This function:
       - Removes repeated header noise and timestamp rows.
@@ -24,7 +26,7 @@ def transform_classroom_utilization(csv_path: str) -> pd.DataFrame:
       - Converts numeric and percentage fields into consistent formats.
 
     Args:
-        csv_path (str):
+        input_path (str):
             Path to the raw EMS CSV file containing the exported utilization report.
 
     Returns:
@@ -36,13 +38,23 @@ def transform_classroom_utilization(csv_path: str) -> pd.DataFrame:
 
     Raises:
         FileNotFoundError:
-            If the given CSV path does not exist.
+            If the given file path does not exist.
         ValueError:
-            If the CSV contents cannot be parsed into the expected structure.
+            If the input file contents cannot be parsed into the expected structure.
 
     '''
-    # 1. Read raw file (no header)
-    df = pd.read_csv(csv_path, header=None)
+
+    ext = os.path.splitext(input_path)[1].lower()
+
+    # 1. Choose correct reader for file type
+    if ext == ".csv":
+        df = pd.read_csv(input_path, header=None)
+    elif ext == ".xlsx":
+        df = pd.read_excel(input_path, header=None, engine="openpyxl")
+    elif ext == ".xls":
+        df = pd.read_excel(input_path, header=None, engine="xlrd")
+    else:
+        raise ValueError(f"Unsupported file type: {ext}. Use .xls, .xlsx, or .csv.")
 
     # 2. Drop fully empty rows
     df2 = df.dropna(how='all').copy()
@@ -108,10 +120,25 @@ def transform_classroom_utilization(csv_path: str) -> pd.DataFrame:
     for col in ['Class Meetings', 'Class Hours', 'Avg Est Enroll', 'Avg Act Enroll', 'Max Capacity']:
         out[col] = pd.to_numeric(out[col], errors='coerce')
 
-    # Convert % strings -> numeric fractions (0–1)
+    # 8. Convert values like "97.33%" -> 0.9733
     for col in ['Utilization %', 'Seat Fill %']:
-        out[col] = out[col].astype(str).str.replace('%', '', regex=False)
-        out[col] = pd.to_numeric(out[col], errors='coerce') / 100.0
+        # Always treat incoming values as strings first
+        col_str = out[col].astype(str)
+
+        # Handle percent-case: "97.33%"
+        mask_pct = col_str.str.contains('%')
+
+        out.loc[mask_pct, col] = (
+            col_str[mask_pct]
+            .str.replace('%', '', regex=False)
+            .astype(float) / 100.0
+        )
+
+        # Handle non-percent-case (e.g., numeric values)
+        out.loc[~mask_pct, col] = pd.to_numeric(out.loc[~mask_pct, col], errors='coerce')
+
+        # If numeric values are mistakenly like 97.33 instead of 0.9733 (Excel auto-parsed)
+        out.loc[out[col] > 1, col] = out[col] / 100.0
 
     return out
 
@@ -183,12 +210,12 @@ def write_formatted_excel(df: pd.DataFrame, output_path: str):
 
     wb.save(output_path)
 
-def run_cleaner(input_csv: str, output_xlsx: str) -> None:
+def run_cleaner(input_xlsx: str, output_xlsx: str) -> None:
     """
     Process a raw EMS classroom utilization export and write a cleaned Excel report.
 
     Args:
-        input_csv (str): Path to the raw exported CSV file from EMS.
+        input_xlsx (str): Path to the raw exported input file from EMS.
         output_xlsx (str): Destination path where the formatted Excel file will be written.
 
     Returns:
@@ -196,21 +223,21 @@ def run_cleaner(input_csv: str, output_xlsx: str) -> None:
 
     Raises:
         FileNotFoundError: If the input CSV does not exist.
-        ValueError: If the CSV structure does not match expected format.
+        ValueError: If the Cinput file structure does not match expected format.
 
     """
-    df = transform_classroom_utilization(input_csv)
+    df = transform_classroom_utilization(input_xlsx)
     write_formatted_excel(df, output_xlsx)
 
 # Not being used. Can be used for command-line testing
 if __name__ == "__main__":
     # --- Adjust these paths as needed ---
-    input_csv = "Classroom Utilization EMS Junk Example.csv"
+    input_xlsx = "Classroom Utilization EMS Junk Example.csv"
     output_xlsx = "Classroom Utilization - Clean.xlsx"
     
-    path_to_csv = "C:/Users/mbraun/Python/ETL/excel-cleaner/"
+    path_to_file = "C:/Users/mbraun/Python/ETL/excel-cleaner/"
 
-    input_val = path_to_csv + input_csv
+    input_val = path_to_file + input_xlsx
     # Transform and write
     normalized_df = transform_classroom_utilization(input_val)
     write_formatted_excel(normalized_df, output_xlsx)

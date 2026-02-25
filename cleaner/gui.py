@@ -10,12 +10,12 @@ GUI module for the Classroom Utilization Cleaner application.
 
 This module defines the graphical user interface (GUI) for running the
 classroom utilization cleaning workflow defined in logic.py. It provides a
-simple interface for selecting a raw EMS-exported CSV file, choosing where
+simple interface for selecting a raw EMS-exported file, choosing where
 to save the cleaned Excel output, and executing the cleaning process with a
 single click.
 
 Key features:
-    - Input CSV file picker.
+    - Input file picker.
     - Output Excel file picker (defaulting to the user's Desktop).
     - Run button (enabled only when both input and output paths are chosen).
     - Cancel button to close the application.
@@ -41,13 +41,13 @@ def gui_main() -> None:
 
     This function initializes and displays a Tkinter-based GUI that provides
     users with a point and click interface for converting exported EMS classroom
-    utilization CSV files into cleaned Excel reports. The GUI allows the user
+    utilization files into cleaned Excel reports. The GUI allows the user
     to browse for an input file, select an output destination (defaulting to
     the Desktop), initiate the cleaning, and optionally run multiple cleaning
     operations in succession.
 
     Interface features:
-        - Input CSV selector
+        - Input file selector
         - Output file selector (defaults to Desktop)
         - Run button (enabled only when both paths exist)
         - Cancel button to close the program
@@ -109,7 +109,7 @@ def gui_main() -> None:
 
     input_var = tk.StringVar()
     output_var = tk.StringVar()
-    status_var = tk.StringVar(value='Select an input CSV and choose an output location.')
+    status_var = tk.StringVar(value='Select an input file and choose an output location.')
 
     # Main padded frame
     main_frame = tk.Frame(root, bg=bg_color, padx=15, pady=15)
@@ -129,7 +129,7 @@ def gui_main() -> None:
 
     def browse_input() -> None:
         '''
-        Open a file-picker dialog for selecting the raw EMS CSV file.
+        Open a file-picker dialog for selecting the raw EMS file file.
 
         When a file is selected, this function:
             - Sets the input path
@@ -138,8 +138,8 @@ def gui_main() -> None:
             - Updates the status bar
         '''
         filename = filedialog.askopenfilename(
-            title='Select EMS CSV Export',
-            filetypes=[('CSV files', '*.csv'), ('All files', '*.*')]
+            title='Select EMS Exported File',
+            filetypes=[('All files', '*.*')]
         )
         if filename:
             input_var.set(filename)
@@ -151,7 +151,7 @@ def gui_main() -> None:
         '''
         Open a save dialog to choose the output Excel file location.
 
-        If the user already selected an input CSV, this function uses its
+        If the user already selected an input file, this function uses its
         basename when proposing the default output filename. Otherwise, a
         generic filename is suggested.
         '''
@@ -166,7 +166,7 @@ def gui_main() -> None:
             initialdir=desktop_default,
             initialfile=base_name,
             defaultextension='.xlsx',
-            filetypes=[('Excel files', '*.xlsx'), ('All files', '*.*')]
+            filetypes=[('All files', '*.*')]
         )
         if filename:
             output_var.set(filename)
@@ -174,14 +174,14 @@ def gui_main() -> None:
 
     def reset_for_next_file() -> None:
         '''
-        Reset the GUI fields to allow the user to clean another CSV file.
+        Reset the GUI fields to allow the user to clean another file.
 
         Clears both input and output fields while keeping the window open
         for further processing.
         '''
         input_var.set('')
         output_var.set('')
-        status_var.set('Select an input CSV and choose an output location.')
+        status_var.set('Select an input file and choose an output location.')
 
     def run_process() -> None:
         '''
@@ -201,7 +201,7 @@ def gui_main() -> None:
         output_path = output_var.get().strip()
 
         if not input_path:
-            messagebox.showerror('Error', 'Please select an input CSV file.')
+            messagebox.showerror('Error', 'Please select an input file.')
             return
         if not os.path.isfile(input_path):
             messagebox.showerror('Error', f'Input file does not exist:\n{input_path}')
@@ -254,7 +254,7 @@ def gui_main() -> None:
     title_label.grid(row=0, column=0, columnspan=3, sticky='w', pady=(0, 10))
 
     # Input selector
-    tk.Label(main_frame, text='Input CSV:', font=label_font, bg=bg_color)\
+    tk.Label(main_frame, text='Input File:', font=label_font, bg=bg_color)\
         .grid(row=1, column=0, sticky='e', padx=5, pady=5)
 
     tk.Entry(main_frame, textvariable=input_var, width=60, font=default_font)\
