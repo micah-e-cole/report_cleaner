@@ -1,7 +1,7 @@
 # Ignore Directories
 build/
 run_gui/
-tests/
+
 
 # Ignore Files
 *.pyc
