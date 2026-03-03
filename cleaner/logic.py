@@ -9,15 +9,72 @@
 import os
 import pandas as pd
 import xlrd
+import sys
+from pathlib import Path
 from datetime import datetime
 from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 from openpyxl.styles import Font
 
-# ---------------- FUNCTIONS ----------------
+ALLOWED_EXTENSIONS = {'.csv', '.xls', '.xlsx'}
+
+
+# ---------------- FILE HELPER FUNCTIONS ----------------
+def is_valid_input_file(path: Path) -> bool:
+    """
+    Return True if the file exists, is a file (not a directory),
+    and has an allowed extension.
+    """
+    return path.is_file() and path.suffix.lower() in ALLOWED_EXTENSIONS
+
+
+def collect_input_files(paths: list[str]) -> list[Path]:
+    """
+    Given a list of path strings (files or directories),
+    return a list of valid files to process.
+
+    - If path is a directory: include all allowed files in that directory
+    - If path is a file: include it if its extension is allowed
+    - If extension is not allowed: print a warning and skip
+    """
+    collected: list[Path] = []
+
+    for p_str in paths:
+        p = Path(p_str)
+
+        if not p.exists():
+            print(f"⚠️  Skipping '{p}': path does not exist.")
+            continue
+
+        if p.is_dir():
+            # Process all allowed files in the directory
+            for file in p.iterdir():
+                if is_valid_input_file(file):
+                    collected.append(file)
+                elif file.is_file():
+                    print(
+                        f"⚠️  Skipping '{file.name}': "
+                        f"'.{file.suffix.lstrip('.')}' is not an accepted file type. "
+                        f"Accepted types are: {', '.join(ALLOWED_EXTENSIONS)}"
+                    )
+        else:
+            # It's a file
+            if is_valid_input_file(p):
+                collected.append(p)
+            else:
+                print(
+                    f"⚠️  Skipping '{p.name}': "
+                    f"'.{p.suffix.lstrip('.')}' is not an accepted file type. "
+                    f"Accepted types are: {', '.join(ALLOWED_EXTENSIONS)}"
+                )
+
+    return collected
+
+
+# ---------------- CORE TRANSFORM FUNCTIONS ----------------
 def transform_classroom_utilization(input_path: str) -> pd.DataFrame:
-    '''
-    Transform an EMS classroom utilization .XLSX export into a normalized DataFrame.
+    """
+    Transform an EMS classroom utilization .XLSX/.XLS/.CSV export into a normalized DataFrame.
 
     This function:
       - Removes repeated header noise and timestamp rows.
@@ -27,7 +84,7 @@ def transform_classroom_utilization(input_path: str) -> pd.DataFrame:
 
     Args:
         input_path (str):
-            Path to the raw EMS CSV file containing the exported utilization report.
+            Path to the raw EMS file containing the exported utilization report.
 
     Returns:
         pandas.DataFrame:
@@ -41,8 +98,7 @@ def transform_classroom_utilization(input_path: str) -> pd.DataFrame:
             If the given file path does not exist.
         ValueError:
             If the input file contents cannot be parsed into the expected structure.
-
-    '''
+    """
 
     ext = os.path.splitext(input_path)[1].lower()
 
@@ -122,30 +178,37 @@ def transform_classroom_utilization(input_path: str) -> pd.DataFrame:
 
     # 8. Convert values like "97.33%" -> 0.9733
     for col in ['Utilization %', 'Seat Fill %']:
-        # Always treat incoming values as strings first
+        # Treat incoming values as strings to detect literal percent signs
         col_str = out[col].astype(str)
 
-        # Handle percent-case: "97.33%"
-        mask_pct = col_str.str.contains('%')
+        # Identify rows like "97.33%"
+        mask_pct = col_str.str.contains('%', na=False)
 
-        out.loc[mask_pct, col] = (
+        # Create a numeric Series aligned with the DataFrame index
+        numeric = pd.Series(index=out.index, dtype='float64')
+
+        # Percent-case: "97.33%" -> 0.9733
+        numeric[mask_pct] = (
             col_str[mask_pct]
             .str.replace('%', '', regex=False)
             .astype(float) / 100.0
         )
 
-        # Handle non-percent-case (e.g., numeric values)
-        out.loc[~mask_pct, col] = pd.to_numeric(out.loc[~mask_pct, col], errors='coerce')
+        # Non-percent-case: treat as numeric directly
+        numeric[~mask_pct] = pd.to_numeric(out.loc[~mask_pct, col], errors='coerce')
 
-        # If numeric values are mistakenly like 97.33 instead of 0.9733 (Excel auto-parsed)
-        out.loc[out[col] > 1, col] = out[col] / 100.0
+        # If some values are like 97.33 instead of 0.9733, fix them
+        numeric = numeric.where((numeric <= 1) | numeric.isna(), numeric / 100.0)
+
+        # Assign the clean numeric series back to the column
+        out[col] = numeric
 
     return out
 
 
 def write_formatted_excel(df: pd.DataFrame, output_path: str):
-    '''
-     Write a cleaned and normalized classroom utilization DataFrame to Excel.
+    """
+    Write a cleaned and normalized classroom utilization DataFrame to Excel.
 
     This function:
       - Writes headers beginning at cell A1.
@@ -153,7 +216,7 @@ def write_formatted_excel(df: pd.DataFrame, output_path: str):
       - Freezes the header row for easier navigation.
       - Applies percentage formatting to relevant columns.
       - Auto-adjusts column widths.
-      - Inserts the run date into cell N1.
+      - Inserts the run date into cell J1.
 
     Args:
         df (pandas.DataFrame):
@@ -163,7 +226,7 @@ def write_formatted_excel(df: pd.DataFrame, output_path: str):
 
     Returns:
         None
-    '''
+    """
     # 1. Write basic Excel (pandas puts headers at row 1, starting A1)
     sheet_name = "Classroom Utilization"
     df.to_excel(output_path, index=False, sheet_name=sheet_name)
@@ -204,11 +267,12 @@ def write_formatted_excel(df: pd.DataFrame, output_path: str):
                                      min_col=col_idx, max_col=col_idx):
                 cell[0].number_format = '0.0%'
 
-    # 3. Set N1 = "Date: MM/DD/YYYY"
+    # 3. Set J1 = "Date: MM/DD/YYYY HH:MM AM/PM"
     today_str = datetime.today().strftime('%m/%d/%Y %I:%M %p')
     ws['J1'] = f"Date: {today_str}"
 
     wb.save(output_path)
+
 
 def run_cleaner(input_xlsx: str, output_xlsx: str) -> None:
     """
@@ -222,23 +286,88 @@ def run_cleaner(input_xlsx: str, output_xlsx: str) -> None:
         None: The function writes an Excel file but returns nothing.
 
     Raises:
-        FileNotFoundError: If the input CSV does not exist.
-        ValueError: If the Cinput file structure does not match expected format.
-
+        FileNotFoundError: If the input file does not exist.
+        ValueError: If the input file structure does not match expected format.
     """
     df = transform_classroom_utilization(input_xlsx)
     write_formatted_excel(df, output_xlsx)
 
-# Not being used. Can be used for command-line testing
-if __name__ == "__main__":
-    # --- Adjust these paths as needed ---
-    input_xlsx = "Classroom Utilization EMS Junk Example.csv"
-    output_xlsx = "Classroom Utilization - Clean.xlsx"
-    
-    path_to_file = "C:/Users/mbraun/Python/ETL/excel-cleaner/"
 
-    input_val = path_to_file + input_xlsx
-    # Transform and write
-    normalized_df = transform_classroom_utilization(input_val)
-    write_formatted_excel(normalized_df, output_xlsx)
-    print(f"Cleaned report written to: {output_xlsx}")
+def run_batch_cleaner(inputs: list[str], output_dir: str | None = None) -> None:
+    """
+    Batch-process one or more input paths (files and/or directories).
+
+    - Only .csv, .xls, .xlsx files will be processed.
+    - Any other file types will trigger a warning and be skipped.
+    - Output files are written as '<original_stem>_cleaned.xlsx'.
+
+    Args:
+        inputs (list[str]):
+            List of file and/or directory paths.
+        output_dir (str | None):
+            Optional directory where all cleaned files will be written.
+            If None, each file is written next to its input.
+    """
+    files_to_process = collect_input_files(inputs)
+
+    if not files_to_process:
+        print("No valid input files found. Exiting.")
+        return
+
+    if output_dir is not None:
+        out_base = Path(output_dir)
+        out_base.mkdir(parents=True, exist_ok=True)
+    else:
+        out_base = None  # meaning: use each file's parent
+
+    print(f"Found {len(files_to_process)} file(s) to process.")
+
+    for f in files_to_process:
+        try:
+            if out_base is None:
+                target_dir = f.parent
+            else:
+                target_dir = out_base
+
+            output_path = target_dir / f"{f.stem}_cleaned.xlsx"
+
+            print(f"🔄 Processing: {f}")
+            run_cleaner(str(f), str(output_path))
+            print(f"✅ Finished: {f.name} → {output_path}")
+        except Exception as e:
+            # Don't crash entire batch for one bad file
+            print(f"❌ Error processing '{f}': {e}")
+
+    print("🎉 Batch processing complete.")
+
+
+# Command-line entry point
+if __name__ == "__main__":
+    # Command-line usage:
+    #   python logic.py <file_or_folder> [more_files_or_folders...] [--out OUTPUT_DIR]
+    #
+    # Examples:
+    #   python logic.py "C:/path/to/one_file.xlsx"
+    #   python logic.py "C:/path/to/folder_with_exports"
+    #   python logic.py "file1.csv" "file2.xlsx" --out "C:/output/cleaned"
+    #
+    args = sys.argv[1:]
+
+    if not args:
+        print("Usage: python logic.py <file_or_folder> [more_files_or_folders...] [--out OUTPUT_DIR]")
+        print("Accepted file types:", ", ".join(ALLOWED_EXTENSIONS))
+        sys.exit(1)
+
+    # Simple parsing for optional --out argument
+    if "--out" in args:
+        out_index = args.index("--out")
+        input_args = args[:out_index]
+        if out_index + 1 >= len(args):
+            print("Error: --out provided but no output directory specified.")
+            sys.exit(1)
+        output_dir = args[out_index + 1]
+    else:
+        input_args = args
+        output_dir = None
+
+    run_batch_cleaner(input_args, output_dir)
