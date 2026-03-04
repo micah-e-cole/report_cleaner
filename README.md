@@ -1,10 +1,8 @@
-# Classroom Utilization Cleaner
+# File Cleaner
 
-Technical Implementation Plan & User Guide
+Project: Automating ETL For Messy Data
 
-Project: Classroom Utilization → Clean Excel Transformation Tool 
-
-Purpose: Automatically convert raw classroom utilization CSV exports into a clean, standardized, analytics‑ready Excel workbook.
+Purpose: Automatically convert raw organizational exports into a clean, standardized, analytics‑ready Excel workbook.
 
 AI Acknowledgement: This project was conducted with the assistance of Copilot.
 
@@ -12,12 +10,12 @@ AI Acknowledgement: This project was conducted with the assistance of Copilot.
 
 ## 1. System Overview
 
-The Classroom Utilization Cleaner automates the cleaning and formatting of EMS‑exported utilization reports.  
+The excel_cleaner project automates the cleaning and formatting of exported utilization reports.  
 It removes header noise, page breaks, timestamp rows, and merged‑cell artifacts while producing a uniform dataset suitable for Registrar reporting and downstream tools (Power BI, Excel pivots, dashboards, etc.).
 
 ### The tool performs:
 
-- Import of raw EMS CSV reports  
+- Import of raw building information report data (.xls, .xlsx, .csv)
 - Detection and forward-fill of building names  
 - Extraction of room‑level utilization rows  
 - Parsing/normalization of numeric and percentage values  
