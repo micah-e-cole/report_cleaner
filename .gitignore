@@ -2,7 +2,7 @@
 build/
 run_gui/
 fixtures/
-
+__pycache__/
 
 # Ignore Files
 *.pyc
