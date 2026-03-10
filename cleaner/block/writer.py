@@ -39,7 +39,4 @@ def write_formatted_excel(df, output_path: str):
                                      min_col=col_idx, max_col=col_idx):
                 cell[0].number_format = '0.0%'
 
-    # Timestamp
-    ws['J1'] = f"Date: {datetime.today().strftime('%m/%d/%Y %I:%M %p')}"
-
     wb.save(output_path)
