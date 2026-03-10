@@ -3,6 +3,7 @@ build/
 run_gui/
 fixtures/
 
+
 # Ignore Files
 *.pyc
 run_gui.spec
