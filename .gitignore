@@ -6,3 +6,4 @@ fixtures/
 # Ignore Files
 *.pyc
 run_gui.spec
+*.pdf
