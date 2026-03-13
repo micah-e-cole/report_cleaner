@@ -108,9 +108,9 @@ def write_hourly_excel(df_long: pd.DataFrame, output_path: str) -> None:
 
         # Force expected hour columns to exist even if empty
         expected_hours = [
-            "6a", "7a", "8a", "9a", "10a", "11a",
+            "7a", "8a", "9a", "10a", "11a",
             "12p", "1p", "2p", "3p", "4p", "5p",
-            "6p", "7p", "8p",
+            "6p", "7p", "8p", "9p",
         ]
         for h in expected_hours:
             if h not in wide.columns:
