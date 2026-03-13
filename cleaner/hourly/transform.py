@@ -66,7 +66,8 @@ def transform(df_raw: pd.DataFrame, **options) -> pd.DataFrame:
                 return pr
         return None
 
-    records = []
+        val0 = df.loc[i, 0]
+        text0 = val0.strip() if isinstance(val0, str) else None
 
     # ---------------------------------------------------------
     # 4. Process each mini-table
@@ -137,40 +138,33 @@ def transform(df_raw: pd.DataFrame, **options) -> pd.DataFrame:
                 r += 1
                 continue
 
-            room_full = room_val.strip()
+        # Skip blank/non-string rows
+        if not isinstance(val0, str) or not text0:
+            i += 1
+            continue
 
             # End of block
             if room_full == "Total":
                 break
 
-            # Skip noise rows
-            if any(
-                marker in room_full
-                for marker in (
-                    "Seattle University",
-                    "Reporting Period",
-                    "All figures",
-                    "Page ",
-                    "Grand Total",
-                )
-            ):
-                r += 1
+        for col_idx, hour_label in time_cols.items():
+            if hour_label == "Average":
                 continue
 
             # Extract values exactly as EMS lists them
             for col_idx, hour_label in time_cols.items():
                 raw_val = df.loc[r, col_idx]
 
-                rec = {
-                    "Building": building_name,
-                    "Room": room_full,
-                    "Hour": hour_label,
-                    "Value": raw_val,
-                }
-                if reporting_period_suffix:
-                    rec["Reporting Period"] = reporting_period_suffix
+            rec = {
+                "Building": current_building,
+                "Room": room_full,
+                "Hour": hour_label,
+                "Value": raw_val,
+            }
+            if reporting_period_suffix:
+                rec["Reporting Period"] = reporting_period_suffix
 
-                records.append(rec)
+            records.append(rec)
 
             r += 2  # EMS spacer row
 

@@ -6,30 +6,131 @@ from openpyxl.styles import Font
 from openpyxl.utils import get_column_letter
 
 
+import re
+
+import re
+
+import re
+
 def split_room_fields(building_name: str, room_full: str):
     """
-    Split 'Bannan 222 - Classroom' into:
-      Building, Room Number, Classroom Type
+    Robust EMS room parser for all buildings including:
+      - Fine Arts Building (and FINR abbreviation)
+      - Administration Building
+      - Pigott Building
+      - 1103 E. Madison Building (special-case normalization)
+      - All 'Other Area #x' rooms
+      - Floor-level and named rooms with no dash
+
+    Guarantees:
+      - Building name NEVER appears in Room Number or Classroom Type.
+      - Room Number always contains the meaningful identifier.
+      - Classroom Type defaults to 'Other' when blank.
     """
-    room_number = room_full.strip()
+
+    # ----------------------------------------------------------------------
+    # 1. Normalize building name (strip suffix)
+    # ----------------------------------------------------------------------
+    room_full = str(room_full).strip()
+
+    m_suffix = re.search(r"\s*\(Not REG Scheduled Space\)\s*$", building_name)
+    if m_suffix:
+        suffix = m_suffix.group(0)
+        base_building = building_name[: m_suffix.start()]
+    else:
+        base_building = building_name
+        suffix = ""
+
+    # ----------------------------------------------------------------------
+    # 2. Special-case for 1103 E. Madison Building
+    # ----------------------------------------------------------------------
+    display_building = base_building
+    room_prefix_to_strip = None
+
+    if base_building.startswith("1103 E. Madison"):
+        m_madison = re.search(r"Madison(.*)", base_building)
+        display_building = "Madison" + (m_madison.group(1) if m_madison else "")
+        room_prefix_to_strip = "1103 E. Madison"
+
+    # ----------------------------------------------------------------------
+    # 3. FINR abbreviation → Fine Arts Building
+    # ----------------------------------------------------------------------
+    if room_full.startswith("FINR "):
+        # Replace building context:
+        display_building = "Fine Arts Building" + suffix
+        # Remove FINR prefix so room parsing works:
+        room_full = room_full.replace("FINR", "Fine Arts", 1)
+
+    # Add suffix back
+    display_building = display_building + suffix
+
+    # ----------------------------------------------------------------------
+    # 4. Strip building words from start of room_full
+    # ----------------------------------------------------------------------
+    room = room_full
+
+    # 4a. For the Madison building special-case
+    if room_prefix_to_strip and room.startswith(room_prefix_to_strip):
+        room = room[len(room_prefix_to_strip):].lstrip()
+
+    # 4b. Strip each word in the building name IF at start of the room string
+    # This handles:
+    #   Fine Arts 114 - ...
+    #   Fine Arts 1st Floor Lobby
+    #   Administration Other Area #1
+    base_tokens = base_building.split()
+    for tok in base_tokens:
+        if room.startswith(tok + " "):
+            room = room[len(tok):].lstrip()
+
+    # Also strip uppercase variants ('FINE', 'ARTS', etc.)
+    for tok in base_tokens:
+        up_tok = tok.upper()
+        if room.upper().startswith(up_tok + " "):
+            room = room[len(tok):].lstrip()
+
+    # ----------------------------------------------------------------------
+    # 5. Handle "Other Area #x"
+    # ----------------------------------------------------------------------
+    if "Other Area" in room and " - " not in room:
+        return display_building, room.strip(), "Other"
+
+    # ----------------------------------------------------------------------
+    # 6. Handle dash-separated rooms: "<number> - <type>"
+    # ----------------------------------------------------------------------
+    if " - " in room:
+        left, right = room.split(" - ", 1)
+        left = left.strip()
+        right = right.strip()
+
+        # Extract number-like token from left
+        m_num = re.search(r"\b(\d+[A-Za-z0-9/-]*)\b", left)
+        room_number = m_num.group(1) if m_num else left
+        room_type = right or "Other"
+        return display_building, room_number.strip(), room_type.strip()
+
+    # ----------------------------------------------------------------------
+    # 7. Handle floor-level and named rooms with no dash:
+    #     1st Floor Lobby
+    #     2nd Floor Lobby
+    #     COSTUME SHOP
+    # ----------------------------------------------------------------------
+    room_number = room
     room_type = ""
 
-    if " - " in room_full:
-        left, right = room_full.split(" - ", 1)
-        room_type = right.strip()
+    # If possible, identify number-like tokens (1st, 2nd, 201, etc.)
+    # but keep the rest as type or default to Other
+    # Example: "1st Floor Lobby" → room_number = "1st Floor Lobby"
+    # Example: "COSTUME SHOP" → room_number = "COSTUME SHOP"
+    # Example: "209 - Office" already handled above
 
-        tokens = left.split()
-        if tokens:
-            last = tokens[-1]
-            if any(ch.isdigit() for ch in last):
-                room_number = last
-            else:
-                room_number = left.strip()
-    return building_name, room_number, room_type
+    if not room_type.strip():
+        room_type = "Other"
 
+    return display_building, room_number.strip(), room_type.strip()
 
 def format_hour_label(label: str) -> str:
-    """Convert '6a' -> '6 AM', '12p' -> '12 PM'."""
+    """Convert 'xa' -> 'x AM', 'xp' -> 'x PM'."""
     m = re.match(r"^(\d+)([ap])$", str(label).strip().lower())
     if not m:
         return label
@@ -52,8 +153,12 @@ def write_hourly_excel(df_long: pd.DataFrame, output_path: str) -> None:
       A: Building
       B: Room Number
       C: Classroom Type
-      D:R: Hour columns (6 AM:8 PM)
-      S: Average Utilization by Room (row-wise average across D:R)
+      D:...: Hour columns (e.g., 6 AM:9 PM depending on data)
+      Last: Average Utilization by Room (row-wise average across hour columns)
+
+    IMPORTANT: This writer is designed so that rooms with NO hourly data
+               (all hour cells empty/NaN in EMS) STILL APPEAR in the output
+               with 0.0 across all hour columns and Average.
     """
     # 1. Extract reporting period once; remove from data table
     reporting_period = None
@@ -85,32 +190,45 @@ def write_hourly_excel(df_long: pd.DataFrame, output_path: str) -> None:
 
     df = df.drop(columns=["Room"])
 
+    # Build a base list of all unique rooms (even if they have no hour data)
+    base_index = df[["Building", "Room Number", "Classroom Type"]].drop_duplicates()
+
     # 3. Pivot to wide format: one row per room, columns per Hour
     if df.empty:
         wide = pd.DataFrame(columns=["Building", "Room Number", "Classroom Type"])
     else:
         # Keep raw Value entries, do NOT scale for percentages
-        wide = df.pivot_table(
+        wide_pivot = df.pivot_table(
             index=["Building", "Room Number", "Classroom Type"],
             columns="Hour",
             values="Value",
             aggfunc=lambda x: x.iloc[0],  # keep first occurrence as-is
         )
-        wide = wide.reset_index()
+        wide_pivot = wide_pivot.reset_index()
 
         # Flatten possible MultiIndex columns from pivot
-        wide.columns = [col if isinstance(col, str) else col[1] for col in wide.columns]
+        wide_pivot.columns = [
+            col if isinstance(col, str) else col[1] for col in wide_pivot.columns
+        ]
 
-        # 🔴 FIX: drop any 'Average' column coming from EMS (pivot),
-        #        we'll compute our own Average later.
+        # Merge base index with pivot to ensure rooms with no data are retained
+        wide = base_index.merge(
+            wide_pivot,
+            on=["Building", "Room Number", "Classroom Type"],
+            how="left",
+        )
+
+        # Drop any 'Average' column coming from EMS (pivot),
+        # we'll compute our own Average later.
         if "Average" in wide.columns:
             wide = wide.drop(columns=["Average"])
 
         # Force expected hour columns to exist even if empty
+        # We support both 6a–8p and 7a–9p style ranges by including a superset.
         expected_hours = [
             "6a", "7a", "8a", "9a", "10a", "11a",
             "12p", "1p", "2p", "3p", "4p", "5p",
-            "6p", "7p", "8p",
+            "6p", "7p", "8p", "9p",
         ]
         for h in expected_hours:
             if h not in wide.columns:
@@ -123,32 +241,46 @@ def write_hourly_excel(df_long: pd.DataFrame, output_path: str) -> None:
             m = re.match(r"^(\d+)([ap])$", str(label).strip().lower())
             if not m:
                 return 999
-            h = int(m.group(1))
+            hh = int(m.group(1))
             ap = m.group(2)
             if ap == "a":
-                h24 = h if h != 12 else 0
+                h24 = hh if hh != 12 else 0
             else:
-                h24 = h + 12 if h != 12 else 12
+                h24 = hh + 12 if hh != 12 else 12
             return h24
 
         base_cols = ["Building", "Room Number", "Classroom Type"]
         hour_cols = [c for c in wide.columns if c not in base_cols]
         hour_cols_sorted = sorted(hour_cols, key=hour_key)
 
-        # Ensure hour columns are numeric; empty → 0
+        # Ensure hour columns are numeric; empty/NaN → 0
         for h in hour_cols_sorted:
             wide[h] = pd.to_numeric(wide[h], errors="coerce").fillna(0)
 
         # Add Average column (will be the ONLY 'Average' column now)
         wide["Average"] = 0.0
 
-        # Reorder columns: A–C base, D–R hours, S average
+        # Reorder columns: A–C base, D–? hours, last = Average
         wide = wide[base_cols + hour_cols_sorted + ["Average"]]
 
         # Rename hour labels for display (6a → 6 AM, etc.)
         rename_map = {h: format_hour_label(h) for h in hour_cols_sorted}
         wide = wide.rename(columns=rename_map)
         # Average column header stays "Average"
+
+        # OPTIONAL: if you want to append "(Not REG Scheduled Space)" here
+        # instead of (or in addition to) transform-level tagging:
+        #
+        # Find columns that are hours (after renaming)
+        hour_display_cols = [format_hour_label(h) for h in expected_hours]
+        hour_display_cols = [c for c in hour_display_cols if c in wide.columns]
+
+        # A room is "Not REG Scheduled Space" if ALL hour values are 0.0
+        no_data_mask = (wide[hour_display_cols] == 0).all(axis=1)
+
+        wide.loc[no_data_mask, "Building"] = (
+            wide.loc[no_data_mask, "Building"] + " (Not REG Scheduled Space)"
+        )
 
     sheet_name = "Hourly Utilization"
 
@@ -197,7 +329,7 @@ def write_hourly_excel(df_long: pd.DataFrame, output_path: str) -> None:
         ws.column_dimensions[get_column_letter(col_idx)].width = max_len + 2
 
     # Set up Average in last column (row-wise, across hour columns)
-    first_hour_col_idx = 4   # D
+    first_hour_col_idx = 4   # D = first hour column
     last_hour_col_idx = max_col - 1  # last hour col (before Average)
     avg_col_idx = max_col          # Average column
 
