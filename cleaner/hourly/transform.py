@@ -28,20 +28,43 @@ def _read_hourly_raw(input_path: str) -> pd.DataFrame:
     return df
 
 
+def _is_page_header(text: str) -> bool:
+    """True if col0 text is page/sub-table boilerplate."""
+    if not text:
+        return False
+
+    if re.search(r"\d{1,2}/\d{1,2}/\d{4}", text):
+        return True  # date line
+
+    if text == "Seattle University":
+        return True
+
+    if text.startswith("Hourly Room Utilization"):
+        return True
+
+    if text.startswith("Reporting Period:"):
+        return True
+
+    if text.startswith("All figures"):
+        return True
+
+    if re.search(r"Page\s+\d+\s+of\s+\d+", text):
+        return True
+
+    return False
+
+
 def transform_hourly_utilization(input_path: str) -> pd.DataFrame:
     """
     Transform an EMS Hourly Room Utilization export into long-format DataFrame.
 
-    IMPORTANT CHANGE:
-        - Hour column values are imported EXACTLY as they appear in the EMS report.
-        - No numeric conversion, no percent normalization.
-
-    Output columns:
-        Building
-        Room
-        Hour
-        Value
-        Reporting Period
+    Rules:
+      - Row i:   <Building Name>
+      - Row i+1: 'Location' + hour labels → header
+      - Rows after header, up to 'Total' → room rows (possibly across pages)
+      - Buildings may span multiple sub-tables/pages; page headers are ignored.
+      - Hour labels kept as-is (e.g. '7a', '12p', '8p', '9p').
+      - Rooms with no hour data at all are still included.
     """
     df = _read_hourly_raw(input_path)
 
@@ -55,135 +78,131 @@ def transform_hourly_utilization(input_path: str) -> pd.DataFrame:
         if reporting_period_suffix is not None:
             break
 
-    # 2. Find "Seattle University" row indices (block starts)
-    su_indices: List[int] = []
-    for idx, row in df.iterrows():
-        if any(isinstance(v, str) and v.strip() == "Seattle University" for v in row):
-            su_indices.append(idx)
+    records: list[dict] = []
 
-    # 3. Find all "Page x of y" footer rows (block ends)
-    page_rows: List[int] = []
-    for idx, row in df.iterrows():
-        for v in row:
-            if isinstance(v, str) and re.search(r"Page\s+\d+\s+of\s+\d+", v):
-                page_rows.append(idx)
-                break
+    n = len(df)
+    i = 0
 
-    # helper to find the page-row for a given SU block
-    def find_page_for_block(su_idx: int):
-        for pr in page_rows:
-            if pr > su_idx:
-                return pr
-        return None
+    current_building: str | None = None
+    time_cols: dict[int, str] | None = None
+    in_building = False
 
-    records = []
+    while i < n:
+        val0 = df.loc[i, 0]
+        text0 = val0.strip() if isinstance(val0, str) else None
 
-    # 4. For each mini-table
-    for su_idx in su_indices:
-        page_idx = find_page_for_block(su_idx)
-        if page_idx is None:
+        # ------------------------------------------------------------------
+        # A. Detect building header: row i has building name, and row i+1 has 'Location'
+        # ------------------------------------------------------------------
+        if isinstance(text0, str) and not _is_page_header(text0):
+            # Check if next row is 'Location'
+            if i + 1 < n:
+                next_val0 = df.loc[i + 1, 0]
+                next_text0 = next_val0.strip() if isinstance(next_val0, str) else None
+
+                if next_text0 == "Location":
+                    # Start a new building block
+                    current_building = text0
+                    in_building = True
+
+                    # Parse hour columns from header row (row i+1)
+                    header_idx = i + 1
+                    header_row = df.loc[header_idx]
+                    time_cols = {}
+
+                    for col_idx, v in header_row.items():
+                        if not isinstance(v, str):
+                            continue
+
+                        vs = v.strip()
+                        vsl = vs.lower()
+
+                        if vsl in ("location", "", None):
+                            continue
+
+                        if ("average" in vsl or "avg" in vsl) and vsl != "average":
+                            continue
+
+                        if vsl == "average":
+                            time_cols[col_idx] = "Average"
+                            continue
+
+                        vs_clean = re.sub(r"\s+", "", vsl)
+                        if re.fullmatch(r"\d{1,2}[ap]", vs_clean):
+                            time_cols[col_idx] = vs_clean
+                            continue
+
+                    # Move i to first potential room row (after header)
+                    i = header_idx + 1
+                    continue  # go to next iteration using new i
+
+        # ------------------------------------------------------------------
+        # If not in a building yet, just advance
+        # ------------------------------------------------------------------
+        if not in_building or time_cols is None or current_building is None:
+            i += 1
             continue
 
-        # Layout offsets
-        building_row = su_idx + 3
-        location_row = su_idx + 4
-        first_room_row = su_idx + 6
+        # Now we are inside a building block (between its header and 'Total')
 
-        if location_row >= len(df):
+        val0 = df.loc[i, 0]
+        text0 = val0.strip() if isinstance(val0, str) else None
+
+        # ------------------------------------------------------------------
+        # B. End of building: 'Total'
+        # ------------------------------------------------------------------
+        if isinstance(text0, str) and text0 == "Total":
+            in_building = False
+            time_cols = None
+            current_building = None
+            i += 1
             continue
 
-        # Building name
-        building_val = df.loc[building_row, 0] if building_row < len(df) else None
-        building_name = (
-            building_val.strip()
-            if isinstance(building_val, str) and building_val.strip()
-            else (str(building_val).strip() if building_val is not None else "")
-        )
+        # ------------------------------------------------------------------
+        # C. Page headers inside building: ignore
+        # ------------------------------------------------------------------
+        if isinstance(text0, str) and _is_page_header(text0):
+            i += 1
+            continue
 
-        # ===== FIXED HEADER PARSING BLOCK =====
-        header_row = df.loc[location_row]
-        time_cols = {}
+        # ------------------------------------------------------------------
+        # D. Skip summary 'Average' rows inside building
+        # ------------------------------------------------------------------
+        if isinstance(text0, str) and text0 == "Average":
+            i += 1
+            continue
 
-        for col_idx, val in header_row.items():
-            if not isinstance(val, str):
+        # Skip blank/non-string rows
+        if not isinstance(val0, str) or not text0:
+            i += 1
+            continue
+
+        # ------------------------------------------------------------------
+        # E. Treat as room row
+        # ------------------------------------------------------------------
+        room_full = text0
+
+        for col_idx, hour_label in time_cols.items():
+            if hour_label == "Average":
                 continue
 
-            # ---- ALWAYS skip Column S ----
-            if col_idx == 18:  # Column S
-                continue
+            raw_val = df.loc[i, col_idx]
 
-            vs = val.strip()
-            vsl = vs.lower()
+            rec = {
+                "Building": current_building,
+                "Room": room_full,
+                "Hour": hour_label,
+                "Value": raw_val,
+            }
+            if reporting_period_suffix:
+                rec["Reporting Period"] = reporting_period_suffix
 
-            # Skip Location or blank
-            if vsl in ("location", "", None):
-                continue
+            records.append(rec)
 
-            # Reject EMS summary columns containing "avg" or extra "average"
-            if ("average" in vsl or "avg" in vsl) and vsl != "average":
-                continue
-
-            # Keep EXACT "Average"
-            if vsl == "average":
-                time_cols[col_idx] = "Average"
-                continue
-
-            # Keep ONLY true hour labels: 6a–8p
-            if re.fullmatch(r"\d{1,2}[ap]", vsl):
-                time_cols[col_idx] = vs
-                continue
-
-            # Everything else ignored
-        # ===== END FIXED HEADER PARSING BLOCK =====
-
-        # 5. Process room rows
-        r = first_room_row
-        while r < page_idx:
-            room_val = df.loc[r, 0]
-
-            if not isinstance(room_val, str) or not room_val.strip():
-                r += 1
-                continue
-
-            room_full = room_val.strip()
-
-            if room_full == "Total":
-                break
-
-            # Skip noise rows
-            if any(
-                marker in room_full
-                for marker in (
-                    "Seattle University",
-                    "Reporting Period",
-                    "All figures",
-                    "Page ",
-                    "Grand Total",
-                )
-            ):
-                r += 1
-                continue
-
-            # Extract values AS-IS
-            for col_idx, hour_label in time_cols.items():
-                raw_val = df.loc[r, col_idx]
-
-                rec = {
-                    "Building": building_name,
-                    "Room": room_full,
-                    "Hour": hour_label,
-                    "Value": raw_val,
-                }
-                if reporting_period_suffix:
-                    rec["Reporting Period"] = reporting_period_suffix
-
-                records.append(rec)
-
-            r += 2  # skip spacer row
+        i += 1  # next row
 
     out = pd.DataFrame(records)
 
-    # Order columns
     if not out.empty:
         cols = ["Building", "Room", "Hour", "Value"]
         if "Reporting Period" in out.columns:
