@@ -1,6 +1,5 @@
-from datetime import datetime
 import re
-
+import numpy as np
 import pandas as pd
 from openpyxl import load_workbook
 from openpyxl.styles import Font
@@ -182,6 +181,13 @@ def write_hourly_excel(df_long: pd.DataFrame, output_path: str) -> None:
     df["Building"] = buildings
     df["Room Number"] = room_numbers
     df["Classroom Type"] = room_types
+
+    df["Classroom Type"] = (
+        df["Classroom Type"]    # if there is no value, return "Other"
+        .replace("", pd.NA)
+        .fillna("Other")
+    )
+
     df = df.drop(columns=["Room"])
 
     # Build a base list of all unique rooms (even if they have no hour data)

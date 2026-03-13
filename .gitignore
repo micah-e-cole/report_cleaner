@@ -8,3 +8,4 @@ __pycache__/
 *.pyc
 run_gui.spec
 *.pdf
+*.bat
